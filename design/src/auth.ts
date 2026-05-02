@@ -8,7 +8,9 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
+import { spawnSync } from "node:child_process";
 
 const CONFIG_PATH = path.join(process.env.HOME || "~", ".gstack", "openai.json");
 const DEFAULT_BASE_URL = "https://api.openai.com";
@@ -55,6 +57,96 @@ export function openAiUrl(pathname: string): string {
   }
 
   return `${baseUrl}${pathWithSlash}`;
+}
+
+function shouldForceIpv6(url: string): boolean {
+  if (process.env.OPENAI_FORCE_IPV4 === "1") return false;
+  if (process.env.OPENAI_FORCE_IPV6 === "1") return true;
+
+  try {
+    return new URL(url).hostname === "api.cborg.lbl.gov";
+  } catch {
+    return false;
+  }
+}
+
+function headerEntries(headers: RequestInit["headers"]): [string, string][] {
+  if (!headers) return [];
+  if (headers instanceof Headers) {
+    return Array.from(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return headers.map(([key, value]) => [key, String(value)]);
+  }
+  return Object.entries(headers).map(([key, value]) => [key, String(value)]);
+}
+
+function quoteCurlConfig(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function curlTimeoutSeconds(): number {
+  const timeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
+  return Number.isFinite(timeoutMs) ? Math.max(1, Math.ceil(timeoutMs / 1000)) : 120;
+}
+
+async function curlIpv6Fetch(url: string, init: RequestInit): Promise<Response> {
+  const method = init.method || "GET";
+  const body = typeof init.body === "string" ? init.body : init.body ? String(init.body) : "";
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gstack-openai-curl-"));
+  const configPath = path.join(tmpDir, "curl.conf");
+
+  const configLines = [
+    "ipv6",
+    "silent",
+    "show-error",
+    `max-time = ${curlTimeoutSeconds()}`,
+    `request = ${quoteCurlConfig(method)}`,
+    `url = ${quoteCurlConfig(url)}`,
+    ...headerEntries(init.headers).map(([key, value]) => `header = ${quoteCurlConfig(`${key}: ${value}`)}`),
+  ];
+
+  fs.writeFileSync(configPath, `${configLines.join("\n")}\n`, { mode: 0o600 });
+
+  try {
+    const args = ["--config", configPath, "--write-out", "\n%{http_code}"];
+    if (body) {
+      args.push("--data-binary", "@-");
+    }
+
+    const result = spawnSync("curl", args, {
+      input: body,
+      encoding: "utf-8",
+      maxBuffer: 80 * 1024 * 1024,
+    });
+
+    const stdout = result.stdout || "";
+    const stderr = result.stderr || "";
+
+    if (result.error || result.status !== 0) {
+      const message = stderr.trim() || result.error?.message || `curl exited with status ${result.status}`;
+      return new Response(JSON.stringify({ error: { message, type: "transport_error" } }), { status: 599 });
+    }
+
+    const splitAt = stdout.lastIndexOf("\n");
+    const responseText = splitAt >= 0 ? stdout.slice(0, splitAt) : stdout;
+    const statusText = splitAt >= 0 ? stdout.slice(splitAt + 1).trim() : "200";
+    const status = Number.parseInt(statusText, 10) || 200;
+    return new Response(responseText, {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+export async function openAiFetch(pathname: string, init: RequestInit): Promise<Response> {
+  const url = openAiUrl(pathname);
+  if (shouldForceIpv6(url)) {
+    return curlIpv6Fetch(url, init);
+  }
+  return fetch(url, init);
 }
 
 /**

@@ -593,7 +593,26 @@ create_codex_runtime_root() {
   if [ -d "$gstack_dir/browse/bin" ]; then
     ln -snf "$gstack_dir/browse/bin" "$codex_gstack/browse/bin"
   fi
-  if [ -d "$gstack_dir/design/dist" ]; then
+  if [ -f "$gstack_dir/design/src/cli.ts" ]; then
+    # Use a source-backed wrapper for Codex. Bun-compiled design binaries can
+    # choose IPv4 on dual-stack hosts, while the source runtime follows the
+    # user's shell/network setup and works with IPv6-authorized providers.
+    [ -L "$codex_gstack/design/dist" ] && rm -f "$codex_gstack/design/dist"
+    mkdir -p "$codex_gstack/design/dist"
+    cat > "$codex_gstack/design/dist/design" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v bun >/dev/null 2>&1; then
+  _bun=\$(command -v bun)
+elif [ -x "\$HOME/.bun/bin/bun" ]; then
+  _bun="\$HOME/.bun/bin/bun"
+else
+  _bun=bun
+fi
+exec "\$_bun" "$gstack_dir/design/src/cli.ts" "\$@"
+EOF
+    chmod +x "$codex_gstack/design/dist/design"
+  elif [ -d "$gstack_dir/design/dist" ]; then
     ln -snf "$gstack_dir/design/dist" "$codex_gstack/design/dist"
   fi
   if [ -f "$agents_dir/gstack-upgrade/SKILL.md" ]; then

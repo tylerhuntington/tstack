@@ -70,5 +70,11 @@ export OPENAI_API_KEY="$CBORG_API_KEY"
 export OPENAI_BASE_URL="https://api.cborg.lbl.gov"
 ```
 
+C/Borg authorizes the client IP address. On dual-stack networks the key manager
+may authorize IPv6 while some API clients connect over IPv4 and receive a 403.
+The TStack designer forces IPv6 for `api.cborg.lbl.gov` requests. Set
+`OPENAI_FORCE_IPV4=1` to disable that behavior, or `OPENAI_FORCE_IPV6=1` to
+force IPv6 for another OpenAI-compatible endpoint.
+
 The setup script also links `design/dist` into the Codex runtime root so
 `/plan-design-review` can find the designer without a manual symlink.

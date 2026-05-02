@@ -4,7 +4,7 @@
  */
 
 import fs from "fs";
-import { openAiUrl, requireApiKey } from "./auth";
+import { openAiFetch, requireApiKey } from "./auth";
 
 export interface CheckResult {
   pass: boolean;
@@ -22,7 +22,7 @@ export async function checkMockup(imagePath: string, brief: string): Promise<Che
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch(openAiUrl("/v1/chat/completions"), {
+    const response = await openAiFetch("/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
