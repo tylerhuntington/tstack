@@ -5,7 +5,7 @@
  */
 
 import fs from "fs";
-import { requireApiKey } from "./auth";
+import { openAiFetch, requireApiKey } from "./auth";
 import { readDesignConstraints } from "./memory";
 
 export interface DesignToCodeResult {
@@ -37,7 +37,7 @@ export async function generateDesignToCodePrompt(
       ? `\n\nExisting DESIGN.md (use these as constraints):\n${designConstraints}`
       : "";
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await openAiFetch("/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,

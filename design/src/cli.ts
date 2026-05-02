@@ -7,7 +7,7 @@
  *
  * Flow:
  *   1. Parse command + flags from argv
- *   2. Resolve auth (~/. gstack/openai.json → OPENAI_API_KEY → guided setup)
+ *   2. Resolve auth (~/.gstack/openai.json -> OPENAI_API_KEY / OPENAI_BASE_URL -> guided setup)
  *   3. Execute command (API call → write PNG/HTML)
  *   4. Print result JSON to stdout
  */
@@ -60,7 +60,7 @@ function printUsage(): void {
     console.log(`  ${name.padEnd(12)} ${info.description}`);
     console.log(`  ${"".padEnd(12)} ${info.usage}`);
   }
-  console.log("\nAuth: ~/.gstack/openai.json or OPENAI_API_KEY env var");
+  console.log("\nAuth: ~/.gstack/openai.json or OPENAI_API_KEY env var; set OPENAI_BASE_URL for compatible providers");
   console.log("Setup: $D setup");
 }
 
@@ -69,8 +69,9 @@ async function runSetup(): Promise<void> {
   if (existing) {
     console.log("Existing API key found. Running smoke test...");
   } else {
-    console.log("No API key found. Please enter your OpenAI API key.");
-    console.log("Get one at: https://platform.openai.com/api-keys");
+    console.log("No API key found. Please enter your OpenAI-compatible API key.");
+    console.log("For OpenAI, get one at: https://platform.openai.com/api-keys");
+    console.log("For compatible providers, set OPENAI_BASE_URL before running setup.");
     console.log("(Needs image generation permissions)\n");
 
     // Read from stdin
@@ -80,8 +81,8 @@ async function runSetup(): Promise<void> {
     reader.releaseLock();
     const key = new TextDecoder().decode(value).trim();
 
-    if (!key || !key.startsWith("sk-")) {
-      console.error("Invalid key. Must start with 'sk-'.");
+    if (!key) {
+      console.error("Invalid key. API key cannot be empty.");
       process.exit(1);
     }
 
@@ -101,7 +102,7 @@ async function runSetup(): Promise<void> {
     console.log("\nSmoke test PASSED. Design generation is working.");
   } catch (err: any) {
     console.error(`\nSmoke test FAILED: ${err.message}`);
-    console.error("Check your API key and organization verification status.");
+    console.error("Check your API key, OPENAI_BASE_URL, and provider image-generation permissions.");
     process.exit(1);
   }
 }

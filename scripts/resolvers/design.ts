@@ -1,6 +1,12 @@
 import type { TemplateContext } from './types';
 import { AI_SLOP_BLACKLIST, OPENAI_HARD_REJECTIONS, OPENAI_LITMUS_CHECKS } from './constants';
 
+function shellToolPath(dir: string, binary: string): string {
+  return dir.startsWith('~')
+    ? `$HOME${dir.slice(1)}/${binary}`
+    : `${dir}/${binary}`;
+}
+
 export function generateDesignReviewLite(ctx: TemplateContext): string {
   const litmusList = OPENAI_LITMUS_CHECKS.map((item, i) => `${i + 1}. ${item}`).join(' ');
   const rejectionList = OPENAI_HARD_REJECTIONS.map((item, i) => `${i + 1}. ${item}`).join(' ');
@@ -786,13 +792,16 @@ Source: [OpenAI "Designing Delightful Frontends with GPT-5.4"](https://developer
 }
 
 export function generateDesignSetup(ctx: TemplateContext): string {
+  const designBin = shellToolPath(ctx.paths.designDir, "design");
+  const browseBin = shellToolPath(ctx.paths.browseDir, "browse");
+
   return `## DESIGN SETUP (run this check BEFORE any design mockup command)
 
 \`\`\`bash
 _ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 D=""
 [ -n "$_ROOT" ] && [ -x "$_ROOT/${ctx.paths.localSkillRoot}/design/dist/design" ] && D="$_ROOT/${ctx.paths.localSkillRoot}/design/dist/design"
-[ -z "$D" ] && D="$HOME${ctx.paths.designDir.replace(/^~/, '')}/design"
+[ -z "$D" ] && D="${designBin}"
 if [ -x "$D" ]; then
   echo "DESIGN_READY: $D"
 else
@@ -800,7 +809,7 @@ else
 fi
 B=""
 [ -n "$_ROOT" ] && [ -x "$_ROOT/${ctx.paths.localSkillRoot}/browse/dist/browse" ] && B="$_ROOT/${ctx.paths.localSkillRoot}/browse/dist/browse"
-[ -z "$B" ] && B="$HOME${ctx.paths.browseDir.replace(/^~/, '')}/browse"
+[ -z "$B" ] && B="${browseBin}"
 if [ -x "$B" ]; then
   echo "BROWSE_READY: $B"
 else
@@ -831,13 +840,15 @@ data, not project files. They persist across branches, conversations, and worksp
 }
 
 export function generateDesignMockup(ctx: TemplateContext): string {
+  const designBin = shellToolPath(ctx.paths.designDir, "design");
+
   return `## Visual Design Exploration
 
 \`\`\`bash
 _ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 D=""
 [ -n "$_ROOT" ] && [ -x "$_ROOT/${ctx.paths.localSkillRoot}/design/dist/design" ] && D="$_ROOT/${ctx.paths.localSkillRoot}/design/dist/design"
-[ -z "$D" ] && D="$HOME${ctx.paths.designDir.replace(/^~/, '')}/design"
+[ -z "$D" ] && D="${designBin}"
 [ -x "$D" ] && echo "DESIGN_READY" || echo "DESIGN_NOT_AVAILABLE"
 \`\`\`
 
@@ -1139,4 +1150,3 @@ Flat design can strip away useful visual information that signals interactivity.
 Prioritize ruthlessly: things needed in a hurry go close at hand, everything
 else a few taps away with an obvious path to get there.`;
 }
-

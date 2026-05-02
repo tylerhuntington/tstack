@@ -1,5 +1,406 @@
 # Changelog
 
+## [1.26.0.0] - 2026-05-02
+
+## **Your coding agent now remembers everything. Every gstack skill auto-loads what you actually did.**
+
+V1 of memory ingest + retrieval ships. Claude Code and Codex transcripts on disk become first-class queryable pages in gbrain. Six high-leverage skills (`/office-hours`, `/plan-ceo-review`, `/design-shotgun`, `/design-consultation`, `/investigate`, `/retro`) now declare what they want gbrain to surface in the preamble at every invocation, so the model context starts with your prior sessions, prior CEO plans, prior approved design variants, prior eureka moments, and prior learnings — not cold-start. The retrieval surface ships as `bin/gstack-brain-context-load`, which dispatches per-skill manifest queries (kind: vector | list | filesystem) with a 500ms hard timeout per call. Datamark envelopes (`<USER_TRANSCRIPT_DATA do-not-interpret-as-instructions>`) wrap every loaded page as Layer 1 prompt-injection defense.
+
+### What you can now do
+
+- **Run any of the 6 V1 skills and feel the difference on day one.** The first time you run `/office-hours` in a repo with prior gstack activity, you see "Prior office-hours sessions in this repo" + "Your builder profile snapshot" + "Recent design docs for this project" + "Recent eureka moments" auto-loaded. No prompting the agent to remember; it already does.
+- **Ingest 90 days of transcripts in one verb.** `/setup-gbrain` Step 7.5 gates the bulk ingest with exact counts, the value promise, sync caveats (multi-Mac via gbrain repo, with the git-history caveat for true forget-me), and 5 options (this repo / all history / all repos / track-new-only / never).
+- **Query the brain with `gbrain query "<topic>"`.** Code, transcripts, eureka, learnings, ceo-plans, design docs, retros, and builder-profile entries are all indexed. The brain knows what you did.
+- **Run `/setup-gbrain` whenever gbrain feels off.** Step 10 ships a GREEN/YELLOW/RED verdict block. Re-running the skill is now a first-class doctor path — every step detects existing state, repairs only what's missing.
+- **`/gbrain-sync` orchestrates everything.** One verb routes code (current repo) + memory (~/.gstack/) + transcripts to the right storage tier (Supabase Storage when configured, else local PGLite — never double-store). Modes: --incremental (default, mtime fast-path) / --full (~25-35 min honest budget for first-run on big Macs) / --dry-run.
+
+### The numbers that matter
+
+Source: `git diff --shortstat origin/main..HEAD` after V1 ship + the V1 test suite (`bun test test/gstack-memory-*.test.ts test/skill-e2e-memory-pipeline.test.ts`).
+
+| Metric | Δ |
+|---|---|
+| Net branch size vs main | **+4174 / −849 lines** across 39 files |
+| New shared library | **`lib/gstack-memory-helpers.ts`** (330 LOC, 5 public functions: canonicalizeRemote, secretScanFile, detectEngineTier, parseSkillManifest, withErrorContext) |
+| New helpers in `bin/` | **3 helpers** — `gstack-memory-ingest` (580 LOC), `gstack-gbrain-sync` (270 LOC), `gstack-brain-context-load` (420 LOC) |
+| Skills with V1 gbrain manifests | **6 skills** — `/office-hours`, `/plan-ceo-review`, `/design-shotgun`, `/design-consultation`, `/investigate`, `/retro` |
+| Memory types ingested | **8 types** — transcript (Claude Code + Codex), eureka, learning, timeline, ceo-plan, design-doc, retro, builder-profile-entry |
+| Tests added | **65 new tests** — 22 helpers + 15 ingest + 8 sync + 10 context-load + 10 E2E pipeline |
+| New /setup-gbrain steps | **2 steps** — Step 7.5 (transcript ingest gate with 5-option AskUserQuestion) + Step 10 (GREEN/YELLOW/RED idempotent doctor verdict) |
+| New user-facing reference | **`setup-gbrain/memory.md`** — what gets ingested, what stays local, secret scanning via gitleaks, querying, deleting, recovery cases |
+| Manifest schema | **`gbrain.schema: 1`**, validated at gen-skill-docs time; 3 query kinds (vector / list / filesystem) with kind-specific required fields |
+| MCP-call timeout per query | **500ms** hard cap; preamble never blocks > 2s on gbrain issues |
+| Datamark envelope wrap | **per-page** (not per-message) — single envelope around rendered body |
+
+### What this means for builders
+
+You stop describing your past work to the agent. The agent already knows. Run `/office-hours` and the "Welcome back, last time you were on X" beat is sourced from data. Run `/investigate` and it opens with "have we hit this bug class before?" instead of cold-start. Run `/design-shotgun` and the variants regenerate from your taste, not generic defaults.
+
+The storage architecture lands in V1: curated memory rides the existing brain-sync git pipeline; code and transcripts route to Supabase Storage when configured (multi-Mac native) or stay local on PGLite-only Macs. **Never double-store.** Decision rule from D2 (sync by default) survives a CEO review and Codex outside-voice challenge: the value loop (ingest → retrieve → better decisions) requires multi-Mac to feel real.
+
+V1 is **Goldilocks** scope per CEO D18 (Codex F10 strategic challenge): the value loop closes on day one. V1.5 P0 follow-ups capture: `/gbrain-sync --watch` daemon (deferred per F3 invariant), `mcp__gbrain__code_search` MCP tool (cross-repo coordination), `gbrain: default` one-line manifest opt-in (per F1 frontmatter passthrough is bigger than estimated), agent-agnostic `gbrain context` CLI, brain-trajectory observability + weekly digest, classifier-based prompt-injection defense (per F5 ONNX integration), salience MCP server-side promotion. All documented in the plan's V1.5 TODOs.
+
+### Itemized changes
+
+#### Added — Foundation
+
+- `lib/gstack-memory-helpers.ts` — shared module imported by all V1 helpers. canonicalizeRemote (handles https/ssh/git@/.git/quotes/multi-segment), secretScanFile (gitleaks wrapper with discriminated `scanner: "gitleaks" | "missing" | "error"` return), detectEngineTier (cached 60s), parseSkillManifest, withErrorContext (async-aware error logging to `~/.gstack/.gbrain-errors.jsonl`).
+
+#### Added — Ingest pipeline
+
+- `bin/gstack-memory-ingest` — walks `~/.claude/projects/*/`, `~/.codex/sessions/YYYY/MM/DD/`, and `~/.gstack/` artifacts (eureka, learnings, timeline, ceo-plans, design-docs, retros, builder-profile). Modes: --probe / --incremental (default, mtime fast-path) / --bulk. Tolerant JSONL parser handles truncated last lines (D10 partial-flag). State at `~/.gstack/.transcript-ingest-state.json` with schema_version: 1, backup-on-mismatch + JSON-corrupt recovery. gitleaks runs on every page before put_page (D19). --no-write flag for tests + dry-runs (also via `GSTACK_MEMORY_INGEST_NO_WRITE=1`).
+- `bin/gstack-gbrain-sync` — unified sync verb. Orchestrates 3 stages: code import → memory ingest → curated git push. Modes: --incremental / --full / --dry-run. State at `~/.gstack/.gbrain-sync-state.json` (LOCAL per ED1) with per-stage outcomes. --code-only / --no-code / --no-memory / --no-brain-sync for selective stage disable.
+
+#### Added — Retrieval surface
+
+- `bin/gstack-brain-context-load` — V1 retrieval surface. Dispatches per-skill manifest queries by kind (vector via `gbrain query`, list via `gbrain list_pages`, filesystem via local glob). 500ms hard timeout per MCP call. Datamark envelope per page. Layer 1 default fallback with 3 sections (recent transcripts + recent curated + skill-name-matched timeline) all carrying explicit `repo: {repo_slug}` filter (F7 cleanup). Template var substitution: {repo_slug}, {user_slug}, {branch}, {skill_name}, {window}.
+
+#### Added — Skill manifests (6 V1 skills)
+
+- `office-hours/SKILL.md.tmpl` — 4 queries (prior-sessions list + builder-profile fs + design-doc-history fs + prior-eureka fs)
+- `plan-ceo-review/SKILL.md.tmpl` — 3 queries (prior-ceo-plans fs + recent-design-docs fs + recent-reviews list)
+- `design-shotgun/SKILL.md.tmpl` — 3 queries (prior-approved-variants fs + DESIGN.md fs + recent-design-docs fs)
+- `design-consultation/SKILL.md.tmpl` — 3 queries (existing-DESIGN.md fs + prior-design-decisions fs + brand-guidelines list)
+- `investigate/SKILL.md.tmpl` — 3 queries (prior-investigations list + project-learnings fs + recent-eureka fs)
+- `retro/SKILL.md.tmpl` — 3 queries (prior-retros fs + recent-timeline fs + recent-learnings fs)
+
+#### Added — setup-gbrain idempotent doctor + ref doc
+
+- `setup-gbrain/SKILL.md.tmpl` Step 7.5 — Transcript & memory ingest gate. Probe → silent bulk if < 200 sessions / 100MB → AskUserQuestion with 5-option gate otherwise (this repo last 90d / all history / all repos / incremental / never).
+- `setup-gbrain/SKILL.md.tmpl` Step 10 — GREEN/YELLOW/RED verdict block. Re-running /setup-gbrain is now first-class doctor path with detect→repair→report rows for CLI / Engine / doctor / MCP / Repo policy / Code import / Memory sync / Transcripts / CLAUDE.md / Smoke.
+- `setup-gbrain/memory.md` — user-facing reference covering what gets ingested + what stays local + secret scanning + storage tiering + querying + deleting + how the agent uses it + recovery cases.
+
+#### Added — Tests
+
+- `test/gstack-memory-helpers.test.ts` — 22 unit tests covering all 5 public helpers
+- `test/gstack-memory-ingest.test.ts` — 15 tests covering CLI surface, --probe with all source types, state file lifecycle, schema mismatch + JSON corrupt backup-on-error, truncated JSONL handling
+- `test/gstack-gbrain-sync.test.ts` — 8 tests covering --help, unknown flag rejection, --dry-run preview, --no-code stage skip, state file lifecycle, stage results recorded
+- `test/gstack-brain-context-load.test.ts` — 10 tests covering CLI surface, default fallback, manifest dispatch, datamark envelope wrap, render_as template substitution, unresolved template var skip, --quiet suppression, graceful gbrain-CLI-absence
+- `test/skill-e2e-memory-pipeline.test.ts` — 10 E2E tests exercising the full Lane A → B → C value loop with 8 fixture file types
+
+#### Changed
+
+- `package.json` version 1.25.1.0 → 1.26.0.0
+- `VERSION` 1.25.1.0 → 1.26.0.0
+
+#### For contributors
+
+- The plan file at `/Users/garrytan/.claude/plans/ok-actually-lets-go-luminous-thacker.md` (~890 lines) is the canonical V1 design source, including office-hours findings, CEO review expansions (6 cherry-picks accepted, 1 reverted+replaced), Codex outside-voice 10 findings (F1-F10 each resolved or deferred), eng review additions (ED1 + ED2 + 6 auto-applied implementation specs), and V1.5 P0 TODOs section with full handoff context.
+- Manifest schema is versioned (`gbrain.schema: 1`); future format changes bump the schema and require explicit migration. gen-skill-docs validates the schema at build time (kind / required fields per kind / template var resolution / unique IDs).
+- Lane D (cross-repo `gbrain restore-from-sync` with atomic swap + 7-day .bak retention per D11) is documented as V1.5 P0 TODO — gstack repo cannot write to gbrain CLI repo.
+- The retrieval surface helper signature is V1.5-promotion-stable: when V1.5 ships server-side `mcp__gbrain__get_recent_salience` / `find_anomalies` MCP tools, the helper switches its internals from 4-call composition to a single MCP call without changing the manifest format or any skill template.
+- gitleaks vendoring is a V1.0.1 follow-up; for V1.0, the helper expects gitleaks on PATH and warns once if missing. `brew install gitleaks` on macOS gets you covered until the vendored binary ships.
+
+## [1.25.1.0] - 2026-05-01
+
+## **Office-hours stops at Phase 4 architectural forks. AskUserQuestion evals — and `/codex` synthesis — now grade the "because" clause.**
+
+When you run `/office-hours` in builder mode and it reaches Phase 4 (Alternatives Generation), the agent now actually asks you to pick between A/B/C instead of writing "Recommendation: C because..." in chat prose and proceeding straight to the design doc. The previous Phase 4 footer was soft prose ("Present via AskUserQuestion. Do NOT proceed without user approval"); the new one matches the hard `STOP.` pattern from `plan-ceo-review`'s 0C-bis gate, names the blocked next steps (Phase 4.5 / Phase 5 / Phase 6 / design-doc generation), and rejects the "clearly winning approach so I'll just apply it" reasoning.
+
+Format-compliance evals on AskUserQuestion now do more than confirm a `Recommendation:` line exists. A new Haiku 4.5 judge grades the "because <reason>" clause on a 1-5 substance rubric: 5 = specific tradeoff vs an alternative; 3 = generic ("because it's faster"); 1 = boilerplate. Tests fail at threshold ≥ 4, catching the exact failure mode where agents write "Recommendation: B because it's better" — present but useless.
+
+The same rigor extends to **cross-model synthesis surfaces** that previously emitted prose without a structured recommendation. `/codex review`, `/codex challenge`, `/codex consult`, and the Claude adversarial subagent (plus Codex's adversarial pass in `/ship` Step 11) now MUST emit a canonical `Recommendation: <action> because <reason>` line at the end of their synthesis. The reason must compare against alternatives (a different finding, fix-vs-ship, fix-order tradeoff) — generic synthesis ("because adversarial review found things") fails the format check.
+
+### What you can now do
+
+- **Run `/office-hours` builder mode in Conductor and trust the Phase 4 gate.** The architectural fork (server-side vs client-side vs hybrid, or whatever shape your project has) actually surfaces for you to decide. The agent stops cold at Phase 4 until you respond.
+- **Catch weak recommendations in CI.** Periodic-tier evals on `/plan-ceo-review`, `/plan-eng-review`, and `/office-hours` now grade recommendation substance via Haiku 4.5 (~$0.005/judge call). Generic "because it's faster" reasoning fails the gate.
+- **Get an actionable line out of every `/codex` run.** Review, challenge, and consult modes all now end with `Recommendation: <action> because <reason>` — one line you can act on without re-reading the full Codex transcript. Same for the Claude adversarial subagent and Codex adversarial pass that auto-run in `/ship` Step 11.
+
+### The numbers that matter
+
+Source: paid evals run on this branch (`EVALS=1 EVALS_TIER=periodic bun test ...`). Six recommendation-quality evals: 4 plan-format + 1 office-hours Phase 4 + 1 fixture sanity test.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Recommendation-quality eval coverage | regex only (`Choose` literal required) | regex + Haiku 4.5 judge | substance-graded |
+| Office-hours Phase 4 silent auto-decide | possible | regression test gates | trapped |
+| Phase 4 eval cost per run | n/a (test didn't exist) | $0.36, 4 turns, 36s, substance 5 | new |
+| Plan-format judge threshold | none (regex only) | `reason_substance >= 4` | catches generic |
+| Test fixture coverage for judge rubric | manual revert/re-apply sabotage | 13 hand-graded fixtures | deterministic |
+| `judgeRecommendation` branch coverage | n/a | 14/14 (100%) | new |
+
+### What this means for builders
+
+If you've been running `/office-hours` in builder mode and noticed your design doc had architectural choices baked in that you didn't make, that was the bug. Phase 4's footer wasn't strong enough to keep the agent from rationalizing through the gate. After upgrading, the agent stops, asks, and waits.
+
+If you've been writing skill templates with `Recommendation: <choice> because <reason>` and noticing the agent sometimes ships generic reasons, the new judge catches that. Run the format-regression evals against your skill (or copy the pattern into your own E2E tests) and Haiku will rate the because-clause substance. Generic reasons fail at threshold 4; specific tradeoff reasons (level 5) pass.
+
+### Itemized changes
+
+#### Added — judgeRecommendation helper + regression tests
+
+- `test/helpers/llm-judge.ts` gets `judgeRecommendation()` plus the `RecommendationScore` interface. Layered design: deterministic regex parses `present` / `commits` / `has_because` (no LLM call needed for booleans, and the function returns substance=1 immediately when the because-clause is missing). Haiku 4.5 grades only the 1-5 `reason_substance` axis on a tight rubric scoped to the because-clause itself with the surrounding menu as untrusted context.
+- `callJudge()` generalized with an optional model arg defaulting to Sonnet 4.6. Existing callers (`judge`, `outcomeJudge`, `judgePosture`) unchanged.
+- `test/skill-e2e-office-hours-phase4.test.ts` (new, periodic-tier) — SDK + `captureInstruction` regression test for the Phase 4 silent-auto-decide bug. Extracts only the AskUserQuestion Format + Phase 4 sections from `office-hours/SKILL.md` (per CLAUDE.md "extract, don't copy") rather than copying the full skill, saving ~30% per run on Opus tokens.
+- `test/llm-judge-recommendation.test.ts` (new, periodic-tier) — 13 hand-graded fixtures covering substance 5 / 4 / 3 / 1, no-because, no-recommendation, and 6 distinct hedging forms. Replaces the original "manually inject bad text into a captured file and revert the SKILL template" sabotage step with deterministic negative coverage.
+- `test/helpers/e2e-helpers.ts` gets `assertRecommendationQuality()` + `RECOMMENDATION_SUBSTANCE_THRESHOLD` constant. Collapses the 5x duplicated 22-line judge-assertion block (4 plan-format cases + 1 Phase 4) into a single helper call.
+
+#### Changed — office-hours Phase 4 STOP gate
+
+- `office-hours/SKILL.md.tmpl` Phase 4 footer rewritten with a hard `**STOP.**` token (matching `plan-ceo-review/SKILL.md.tmpl:248-252`'s 0C-bis pattern), named blocked next steps (Phase 4.5 Founder Signal Synthesis, Phase 5 Design Doc, Phase 6 Closing, design-doc generation), and an explicit anti-rationalization line ("A 'clearly winning approach' is still an approach decision"). Preserves the preamble's no-variant fallback path explicitly (write `## Decisions to confirm` to the plan file + ExitPlanMode).
+- `test/skill-e2e-plan-format.test.ts` — wired the new judge into all 4 cases (CEO mode, CEO approach, eng coverage, eng kind). Threshold `reason_substance >= 4` catches both boilerplate and generic-tier reasoning. Dropped the strict `Choose` regex (the canonical format spec only requires the option label, not the literal "Choose" prefix). `COMPLETENESS_RE` updated to match the option-prefixed `Completeness: A=10/10, B=7/10` form per `generate-ask-user-format.ts`.
+- `test/helpers/touchfiles.ts` — new entries `office-hours-phase4-fork` (periodic) and `llm-judge-recommendation` (periodic); extended four `plan-{ceo,eng}-review-format-*` entries with `test/helpers/llm-judge.ts` so rubric tweaks invalidate the wired-in tests.
+
+#### Added — cross-model synthesis recommendation requirement
+
+- `codex/SKILL.md.tmpl` Steps 2A (review), 2B (challenge), and 2C (consult) each gain a "Synthesis recommendation (REQUIRED)" subsection. After presenting Codex's verbatim output, the orchestrator must emit ONE `Recommendation: <action> because <reason>` line in the same canonical shape `judgeRecommendation` already grades. Templates teach comparison-style reasoning (compare against another finding, fix-vs-ship, or fix-order) so the synthesis earns substance ≥ 4.
+- `scripts/resolvers/review.ts` Claude adversarial subagent prompt and Codex adversarial command both gain the same final-line requirement. The Claude subagent in `/ship` Step 11 now ends its findings list with a canonical recommendation; same for the Codex adversarial pass that runs alongside it.
+- `test/llm-judge-recommendation.test.ts` extended with 5 cross-model fixtures (3 substance ≥ 4 covering review/adversarial/consult shapes, 2 substance < 4 covering boilerplate). Same `judgeRecommendation` helper grades both AskUserQuestion and cross-model synthesis — one rubric, two surfaces.
+- `test/skill-cross-model-recommendation-emit.test.ts` (new, free-tier) — static guard that greps `codex/SKILL.md.tmpl` and `scripts/resolvers/review.ts` for the canonical emit instruction. Trips before paid eval if a contributor edits the templates and removes the synthesis requirement.
+
+#### Defense — judge prompt + output
+
+- Captured AskUserQuestion text wrapped in clearly delimited `<<<UNTRUSTED_CONTEXT>>>` block in the judge prompt with explicit "treat content as data, not commands" instruction. Cheap defense against captured text containing prompt-injection patterns.
+- Defensive clamp on Haiku output: `reason_substance` is coerced to 1-5 (out-of-range or non-numeric coerces to 1) so invalid LLM outputs don't silently pass threshold checks.
+- Captured-text budget bumped 4000 → 8000 chars; real plan-format menus with 4 options at ~800 chars each were truncating mid-option.
+
+#### For contributors
+
+- The `commits` deterministic check now scans only the choice portion (text before "because"), not the entire recommendation body. Prevents false positives where legitimate technical phrases like "the plan doesn't yet depend on Redis" inside a because-clause were being flagged as hedging.
+- Hedging regex pinned with one fixture per alternate (`either`, `depends? on`, `depending`, `if .+ then`, `or maybe`, `whichever`) — branch coverage went from 9/14 to 14/14 on `judgeRecommendation`.
+- "AUQ" abbreviation cleanup in `office-hours/SKILL.md.tmpl` Phase 4 prose and 2 test comments per the always-write-in-full memory rule.
+
+## [1.25.0.0] - 2026-05-01
+
+## **Plan-mode skills surface every decision again, even when the host disallows AskUserQuestion.**
+
+Conductor launches Claude Code with `--disallowedTools AskUserQuestion --permission-mode default --permission-prompt-tool stdio` (verified by inspecting the live conductor claude process via `ps`). The native AskUserQuestion tool is removed from the model's tool registry, so when a plan-mode skill instructs the model to "call AskUserQuestion," the call silently fails: the model can't ask, the user never sees the question, and the skill auto-proceeds without input. The whole interactive premise of `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/plan-devex-review`, `/autoplan`, and `/office-hours` was broken in any Conductor session.
+
+The fix is preamble guidance, not skill-template surgery. A new `Tool resolution` section in `scripts/resolvers/preamble/generate-ask-user-format.ts` tells the model to check its tool list and prefer any `mcp__*__AskUserQuestion` variant (e.g. `mcp__conductor__AskUserQuestion`) over the native tool. Hosts that disable native AskUserQuestion register their own MCP variant; the variant takes the same questions/options shape and the host renders the prompt through its own UI surface. If neither variant is callable, the model falls back to writing a `## Decisions to confirm` section into the plan file and calling ExitPlanMode — plan-mode's native "Ready to execute?" confirmation surfaces the decisions through TTY UI. **Never silently auto-decide.**
+
+Six gate-tier real-PTY regression tests reproduce the exact Conductor flag set (`extraArgs: ['--disallowedTools', 'AskUserQuestion']`) for every plan-mode skill, plus a periodic-tier eval that protects the legitimate `/plan-tune` AUTO_DECIDE opt-in path from being broken by the fix. The harness gains a new `'auto_decided'` outcome and whitespace-tolerant detectors that survive TTY cursor-positioning escape sequences (which `stripAnsi` removes without leaving spaces, collapsing "ready to execute" to "readytoexecute").
+
+### What you can now do
+
+- **Use plan-mode review skills in Conductor.** Open a Conductor workspace, run `/plan-ceo-review` against a plan, and the scope-mode question actually appears for you to answer. Same for `/plan-eng-review`, `/plan-design-review`, `/plan-devex-review`, `/autoplan`'s premise gate, and `/office-hours`.
+- **Stay in control under `--disallowedTools` without writing template overrides.** The Tool resolution section sits at preamble position 1 in every tier-≥2 skill; new hosts that disable native AUQ via the same pattern get the fix transparently as long as they register an MCP variant.
+- **Opt-in to AUTO_DECIDE without losing the regression guard.** `/plan-tune` users who set `never-ask` for specific questions keep auto-pick under Conductor flags; the periodic-tier `auto-decide-preserved` eval protects this path.
+
+### The numbers that matter
+
+Source: `ps -p <conductor-claude-pid> -o args=` for the regression mechanism (verified primary source). 6 new gate-tier regression cases + 1 periodic-tier AUTO_DECIDE eval; coverage in `test/skill-e2e-plan-{ceo,eng,design,devex}-plan-mode.test.ts` (parameterized inline) + `test/skill-e2e-{autoplan,office-hours}-auto-mode.test.ts` (standalone) + `test/skill-e2e-auto-decide-preserved.test.ts` (periodic).
+
+| Surface | Shape |
+|---|---|
+| Skills that regain interactivity in Conductor | 6 (`/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/plan-devex-review`, `/autoplan`, `/office-hours`) |
+| New gate-tier regression test cases | 6 (one per skill; `--disallowedTools AskUserQuestion` parameterized) |
+| New periodic-tier eval | 1 (`auto-decide-preserved`, protects `/plan-tune` opt-in path) |
+| New `ClassifyResult` outcome | `auto_decided` — TTY shows "Auto-decided … (your preference)" |
+| New `runPlanSkillObservation` parameter | `extraArgs?: string[]` — plumbs raw flags to spawned `claude` |
+| Preamble resolvers touched | 2 (`generate-ask-user-format.ts`, `generate-completion-status.ts`) |
+| SKILL.md files regenerated | 41 |
+| `classifyVisible` branch order | `silent_write` → `auto_decided` → `plan_ready` → `asked` (each more specific than the next) |
+| Whitespace-tolerant detectors | `isPlanReadyVisible`, `isAutoDecidedVisible` (defeats stripAnsi cursor-positioning collapse) |
+| Verified by | `ps -p <conductor-claude-pid> -o args=` showing `--disallowedTools AskUserQuestion --permission-mode default` |
+
+### What this means for builders
+
+If you ran `/plan-ceo-review` or any plan-mode review skill in Conductor before this release, the skill silently produced a plan you didn't shape — the scope-mode question, expansion proposals, and per-section STOPs never reached you. After upgrading, the skill stops for every gate the template defines. The fix is in the preamble, so you don't update skill templates yourself — just upgrade gstack and the next plan review you run honors your input.
+
+If you opted into auto-deciding specific questions via `/plan-tune`, the periodic eval guards that path. The fix is "prefer MCP variant when registered," not "force every question to surface" — your `never-ask` preferences still auto-pick, the AUTO_DECIDE annotation still renders, nothing changes for opt-in users.
+
+The gstack-side regression test surface now mirrors what real users hit. Each plan-mode test file gained a second `test()` block that sets `extraArgs: ['--disallowedTools', 'AskUserQuestion']` and asserts the AskUserQuestion still surfaces. Builds on v1.21.1.0's `classifyVisible()` extraction — the new auto-decided branch slots in cleanly between silent_write and plan_ready.
+
+### Itemized changes
+
+#### Added — Tool resolution preamble
+
+- `scripts/resolvers/preamble/generate-ask-user-format.ts` gets a new `### Tool resolution (read first)` section at the top of the AskUserQuestion Format block. Tells the model: AskUserQuestion can resolve to two tools at runtime (host MCP variant or native); prefer any `mcp__*__AskUserQuestion` variant in the tool list over native; hosts may disable native via `--disallowedTools AskUserQuestion` (Conductor does this by default); same questions/options shape and decision-brief format applies to the MCP variant. Includes a fallback path when neither variant is callable: write the decision into the plan file as `## Decisions to confirm` + ExitPlanMode.
+- `scripts/resolvers/preamble/generate-completion-status.ts` (the plan-mode-info block at preamble position 1) updated to point at the Tool resolution section: AskUserQuestion satisfies plan mode's end-of-turn requirement for "any variant," with the plan-file fallback for the no-variant case.
+
+#### Added — regression tests
+
+- 4 inline `test()` blocks added to `test/skill-e2e-plan-{ceo,eng,design,devex}-plan-mode.test.ts`. Each spawns claude with `extraArgs: ['--disallowedTools', 'AskUserQuestion']` and asserts the skill still surfaces the question — pass envelope `['asked', 'plan_ready']` (the latter covers the plan-file fallback flow), failure signals are `'auto_decided'` (caught explicitly) plus the standard silent_write/exited/timeout.
+- `test/skill-e2e-autoplan-auto-mode.test.ts` (new). Asserts autoplan's first non-auto-decided gate (Phase 1 premise confirmation) still surfaces. Autoplan auto-decides intermediate questions BY DESIGN, so the test scopes to gates the user MUST see.
+- `test/skill-e2e-office-hours-auto-mode.test.ts` (new). Asserts office-hours' startup-vs-builder mode AskUserQuestion still surfaces.
+- `test/skill-e2e-auto-decide-preserved.test.ts` (new, periodic-tier). Sets up an isolated `GSTACK_HOME` tmpdir, writes `question_tuning=true` + a `never-ask` preference for `plan-ceo-review-mode` (source `'plan-tune'`), runs `/plan-ceo-review` under `--disallowedTools AskUserQuestion`, asserts outcome is NOT `'asked'` (the model honored the opt-in).
+
+#### Changed — PTY harness
+
+- `test/helpers/claude-pty-runner.ts`: `runPlanSkillObservation` accepts new optional `extraArgs?: string[]` (plumbs straight through to `launchClaudePty`, which already supported the field). `ClassifyResult` gains `'auto_decided'` outcome plus `isAutoDecidedVisible(visible)` detector that matches the AUTO_DECIDE preamble template (`Auto-decided … (your preference)`). `classifyVisible` branch order extended to `silent_write → auto_decided → plan_ready → asked` so an upstream auto-decide isn't masked by a downstream plan-mode confirmation.
+- Whitespace-tolerant detection: `isPlanReadyVisible` and `isAutoDecidedVisible` now test both spaced and whitespace-collapsed forms of their target phrases. `stripAnsi` removes cursor-positioning escapes (`\x1b[40C`) without replacing them with spaces, so "ready to execute" can come through as "readytoexecute" — the spaced regex would miss it.
+
+#### Changed — touchfiles
+
+- `test/helpers/touchfiles.ts`: existing `plan-X-review-plan-mode` entries gain `scripts/resolvers/question-tuning.ts` and `scripts/resolvers/preamble/generate-ask-user-format.ts` as touchfile dependencies, so AUTO_DECIDE-bearing resolver changes correctly invalidate the regression cases.
+- New entries: `autoplan-auto-mode` (gate), `office-hours-auto-mode` (gate), `auto-decide-preserved` (periodic).
+- `test/touchfiles.test.ts`: count of tests selected by `plan-ceo-review/SKILL.md` updates from 19 to 21 to cover the new entries that depend on `plan-ceo-review/**`.
+
+#### For contributors
+
+- The PTY harness's `auto_decided` outcome is a defense-in-depth signal: it fires on the AUTO_DECIDE preamble template wording, which is non-deterministic. Treat it as evidence of a regression, not a hard contract.
+- The Tool resolution section is the surgical fix site for any future host that disables native AUQ similarly. The pattern: register a `mcp__<host>__AskUserQuestion` MCP tool; the gstack preamble already tells the model to prefer it. No skill-template changes needed per-host.
+- `auto-decide-preserved` runs in an isolated `GSTACK_HOME` tmpdir to avoid mutating the developer's real `~/.gstack` state. When debugging, set `GSTACK_HOME` manually to a scratch dir and run the same setup the test does (`gstack-config set question_tuning true`, then `gstack-question-preference --write`).
+
+## [1.24.0.0] - 2026-04-30
+
+## **Cross-platform hardening. Mac + Linux full, curated Windows lane added.**
+
+v1.24.0.0 ports the McGluut fork's portability work into upstream and adds a curated Windows test job that actually runs green. `bin/gstack-paths` consolidates state-root resolution behind one helper sourced via `eval "$(...)"` from skill bash blocks; eight skills (`careful`, `freeze`, `guard`, `unfreeze`, `investigate`, `context-save`, `context-restore`, `learn`, `office-hours`, `plan-tune`, `codex`) move off inline `${CLAUDE_PLUGIN_DATA:-...}` chains. `Bun.which()` replaces 75 lines of fork-side PATH-resolution code in a new `browse/src/claude-bin.ts` wrapper, wired through five hardcoded `claude` spawn sites. A new `windows-free-tests` GitHub Actions job runs a curated 103-test subset on `windows-latest` plus targeted resolver tests; `evals.yml` stays Linux-container as it should. `AGENTS.md` and `docs/skills.md` sync to the live skill inventory (40+ skills, was 21); `/debug` → `/investigate`, missing skills added, stale `<5s` `bun test` claim dropped. Hardening direction credited to the McGluut fork.
+
+### The numbers that matter
+
+Branch totals come from `git diff --shortstat origin/main..HEAD` after every lane lands. Curation numbers come from `bun run scripts/test-free-shards.ts --windows-only --list`.
+
+| Metric | Δ |
+|---|---|
+| New shared resolvers | **2 modules** — `bin/gstack-paths` (61 LOC), `browse/src/claude-bin.ts` (73 LOC) |
+| Inline state-root chains consolidated | **8 skills** (was 5 in initial scope; 3 more found during T1) |
+| Hardcoded `claude` spawn sites rewired | **5 sites** — `security-classifier.ts:396`, `:496`, `preflight-agent-sdk.ts`, `helpers/providers/claude.ts`, `helpers/agent-sdk-runner.ts` |
+| Fork's 95-LOC `claude-bin.ts` reimplementation | **−75 lines** — replaced by `Bun.which()` + 18 LOC of override+args wrapping |
+| Windows-safe curated subset | **103 of 128 free tests** (80%) run on `windows-latest`; 25 excluded with reasons |
+| New tests added | **+31 tests** — gstack-paths (8), claude-bin (9), test-free-shards (14) |
+| New invariant tests | **+3** — private-path leak detector + 2 doc-inventory cross-checks in `test/skill-validation.test.ts` |
+| Skill inventory documented | **40+ skills** in AGENTS.md + docs/skills.md (was 21 in AGENTS.md; `/debug` → `/investigate`) |
+| Free test suite | **318 pass, 0 fail** (`bun test test/skill-validation.test.ts`) |
+
+| Component | Coverage |
+|---|---|
+| `bin/gstack-paths` | 8 unit tests covering all three fallback chains |
+| `browse/src/claude-bin.ts` | 9 unit tests including the override-PATH-resolution case the fork's version got wrong |
+| `scripts/test-free-shards.ts` | 14 unit tests covering enumeration, sharding, and Windows-fragility detection |
+
+### What this means for builders
+
+**Plugin installs work.** If you install gstack as a Claude Code plugin, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PLANS_DIR` now flow through every skill's bash blocks. Previously eight skills hardcoded `${GSTACK_HOME:-$HOME/.gstack}` inline; now they all source `bin/gstack-paths` and pick up the plugin-managed roots automatically. No more "plugin install can't find its own state" footgun.
+
+**Windows is a real lane.** A `windows-free-tests` GitHub Actions job runs 103 curated tests on `windows-latest` plus targeted Claude resolver tests. The curation script (`scripts/test-free-shards.ts --windows-only`) excludes tests that hardcode `/bin/bash`, `sh -c`, or raw `/tmp/` paths — those exclusions are tracked as a follow-up TODO since they're the gap between "curated lane" and "full Windows parity." The setup script (`./setup`) still requires Git Bash or MSYS on Windows; native PowerShell support is a future expansion explicitly named in `AGENTS.md`. No "all green" overclaim — the headline says "curated Windows lane" because that's what this release delivers.
+
+**Override the claude binary.** Set `GSTACK_CLAUDE_BIN=wsl` plus `GSTACK_CLAUDE_BIN_ARGS='["claude"]'` and every gstack call site routes Claude through WSL. Three shared resolution layers — `Bun.which()` for the platform handling, a thin wrapper for the override + arg-prefix logic, and five wired-through call sites — eliminate the "works on Mac, fails on Windows" failure mode for the security classifier, the preflight check, the LLM judge, and the agent SDK harness.
+
+**The fork loop reads.** McGluut shipped three commits of real hardening work without filing a PR upstream. We read it, kept the engineering, dropped the framing, and credited where credit is due. Future forks: the contribution path is `git remote add` + open a PR; the take here is the proof that we read what's out there.
+
+### Itemized changes
+
+#### Added
+
+- `bin/gstack-paths`: bash helper that resolves `GSTACK_STATE_ROOT`, `PLAN_ROOT`, `TMP_ROOT` with explicit fallback chains. Sourced via `eval "$(~/.claude/skills/gstack/bin/gstack-paths)"`. Honors `GSTACK_HOME` → `CLAUDE_PLUGIN_DATA` → `$HOME/.gstack` → `.gstack`; `GSTACK_PLAN_DIR` → `CLAUDE_PLANS_DIR` → `$HOME/.claude/plans` → `.claude/plans`; `TMPDIR` → `TMP` → `.gstack/tmp`. Best-effort `mkdir -p` on tmp root; never fails the eval. Pattern matches existing `bin/gstack-slug` and `bin/gstack-codex-probe`.
+- `browse/src/claude-bin.ts`: thin (~70 LOC) wrapper around `Bun.which()` for cross-platform `claude` binary resolution. Honors `GSTACK_CLAUDE_BIN` / `CLAUDE_BIN` env override (absolute path or PATH-resolvable), and `GSTACK_CLAUDE_BIN_ARGS` / `CLAUDE_BIN_ARGS` arg-prefix (JSON array or scalar). Override values go through `Bun.which()` so `GSTACK_CLAUDE_BIN=wsl` resolves correctly — fixing the bug codex flagged in the fork's 95-LOC reimplementation.
+- `scripts/test-free-shards.ts`: enumerates the free test suite, supports stable-hash sharding (FNV-1a), and provides a `--windows-only` filter that scans each test's content for POSIX-bound patterns (`/bin/sh`, `sh -c`, raw `/tmp/`, `chmod`, `xargs`, `which claude`). Adapted from McGluut's fork (190 LOC sharding logic) with the Windows curation filter added by upstream.
+- `.github/workflows/windows-free-tests.yml`: separate non-container job that runs `bun run test:windows` on `windows-latest`, plus targeted `browse/test/claude-bin.test.ts` and `test/gstack-paths.test.ts` runs. NOT a matrix entry on the existing Linux-container `evals.yml` (correctly flagged by codex as not a drop-in).
+- `test/gstack-paths.test.ts`: 8 unit tests covering all three fallback chains (HOME unset, CLAUDE_PLUGIN_DATA set, GSTACK_HOME wins, etc.).
+- `browse/test/claude-bin.test.ts`: 9 unit tests including the override-PATH-resolution case the fork's version got wrong.
+- `test/test-free-shards.test.ts`: 14 unit tests covering enumeration, paid-eval filtering, Windows-fragility detection, and stable sharding.
+- `test/skill-validation.test.ts`: 3 new invariant tests — private-path leak detector (catches accidental references to maintainer-only files in any SKILL.md or SKILL.md.tmpl) and 2 doc-inventory cross-checks (every skill directory must appear in `AGENTS.md` and `docs/skills.md`).
+
+#### Changed
+
+- 11 SKILL.md.tmpl files migrated off inline `${CLAUDE_PLUGIN_DATA:-...}` or `${GSTACK_HOME:-$HOME/.gstack}` chains: `careful`, `freeze`, `guard`, `unfreeze`, `investigate`, `context-save`, `context-restore`, `learn`, `office-hours`, `plan-tune`, `codex`. Each now sources `bin/gstack-paths` and reads `$GSTACK_STATE_ROOT` (or `$PLAN_ROOT` / `$TMP_ROOT` for codex).
+- `codex/SKILL.md.tmpl`: new Step 0.6 "Resolve portable roots" sources `gstack-paths`. Replaces hardcoded `~/.claude/plans/*.md` with `"$PLAN_ROOT"/*.md` (3 sites) and `mktemp /tmp/codex-*-XXXXXX.txt` with `mktemp "$TMP_ROOT/codex-*-XXXXXX.txt"` (3 sites). Skill now works in Claude Code plugin installs without modification.
+- `browse/src/security-classifier.ts`: routes 2 hardcoded `spawn('claude', ...)` calls (version probe at :396, inference call at :496) through `resolveClaudeCommand()`. Honors `GSTACK_CLAUDE_BIN` override; degrades gracefully when claude unavailable.
+- `scripts/preflight-agent-sdk.ts`: replaces `execSync('which claude')` with `resolveClaudeBinary()`. Cross-platform, no shell dependency.
+- `test/helpers/providers/claude.ts`: `available()` and `run()` both go through `resolveClaudeCommand()`. The previous `spawnSync('sh', ['-c', 'command -v claude'])` was a Windows blocker on its own.
+- `test/helpers/agent-sdk-runner.ts`: `resolveClaudeBinary()` now delegates to the shared resolver.
+- `AGENTS.md`: rewrote the skill table from 21 entries to 40+, organized by category (plan reviews, implementation, release, operational, browser, safety). `/debug` → `/investigate`. Stale `<5s` `bun test` claim dropped — there's no realistic universal claim to make about test suite duration with periodic + gate + free tiers all in play.
+- `docs/skills.md`: added 11 missing skills to the inventory table (`/plan-devex-review`, `/devex-review`, `/plan-tune`, `/context-save`, `/context-restore`, `/health`, `/landing-report`, `/benchmark-models`, `/pair-agent`, `/setup-gbrain`, `/make-pdf`).
+- `package.json`: 2 new scripts. `test:free` runs the full free suite via the sharding script. `test:windows` runs the curated Windows-safe subset. Version bump `1.15.0.0` → `1.24.0.0`.
+- `VERSION`: `1.15.0.0` → `1.24.0.0`. Workspace-aware queue at /ship time: v1.16.0.0 claimed by `garrytan/gbrowser-unleashed` (PR #1253), v1.17.0.0 by `garrytan/setup-gbrain-run` (PR #1234), v1.19.0.0 by `garrytan/browserharness` (PR #1233), v1.21.1.0 by `garrytan/pty-plan-mode-e2e` (PR #1255). This branch claims the next available MINOR slot.
+
+#### Fixed
+
+- `GSTACK_CLAUDE_BIN=wsl` (or any PATH-resolvable command) now actually resolves the binary. The McGluut fork's `claude-bin.ts` only handled absolute-path overrides; bare commands silently returned null. The Bun.which-based wrapper feeds the override through PATH lookup, fixing the documented use case.
+- The `<5s` `bun test` claim in `AGENTS.md` is gone. With the slim-preamble harness from v1.15.0.0 plus the new tests added here, free-suite runtime varies; no realistic universal claim to make.
+
+#### Follow-up TODOs (codex-flagged, deferred)
+
+- **Merge-time version-slot freshness recheck.** Current `bin/gstack-next-version` + `scripts/compare-pr-version.ts` queue protection triggers on PR events touching version files. If another PR lands AFTER our gate fires, our claimed slot can go stale without an automatic recheck. P3 follow-up.
+- **POSIX-bound test surfaces for full Windows parity.** 25 tests are excluded from the curated Windows lane via the `WINDOWS_FRAGILE_PATTERNS` scan in `scripts/test-free-shards.ts`. Concrete examples: `test/ship-version-sync.test.ts:72` hardcodes `/bin/bash`, `test/helpers/providers/claude.ts:22` (now fixed in this release), `package.json:12` build step shells out to `bash`/`chmod`. Porting these is the gap between "curated Windows lane" and "full Windows parity." P4 follow-up.
+- **Native PowerShell setup support.** `setup` is bash + symlink heavy at `setup:404`. v1.24.0.0 documents Git Bash / MSYS as the supported Windows install path in `AGENTS.md`. A native PowerShell port closes the last off-the-shelf-for-Windows gap. P4 follow-up.
+
+#### For contributors
+
+- Hardening direction credited to the McGluut fork: <https://github.com/mcgluut/gstack>. The Bun.which-based resolver is upstream's adaptation of the cross-platform binary lookup the fork implemented in `claude-bin.ts`; the path-portability helper is upstream's factoring of the `${CLAUDE_PLUGIN_DATA:-...}` chain the fork inlined per-skill. The curated Windows test job is upstream's reading of what `test-free-shards.ts` was reaching toward, applied with explicit attention to which surfaces are actually Windows-safe today.
+
+## [1.23.0.0] - 2026-04-30
+
+## **Every PR title now starts with `vX.Y.Z.W`. `/ship`, `/document-release`, and the GitHub Action all enforce it.**
+
+The format was already documented in `/ship` Step 19, but a "leave custom titles alone" loophole meant a PR opened without a version prefix would never get one — and `/document-release` never touched the title at all, so a doc-release VERSION bump silently left the PR pointing at the old version. This release closes both gaps. The rule lives in one place now (`bin/gstack-pr-title-rewrite.sh`), all three callers shell out to it, and a free `bun test` locks in the four branches.
+
+### The numbers that matter
+
+Numbers come from `git diff --shortstat origin/main..HEAD` and `bun test test/pr-title-rewrite.test.ts` on a clean tree.
+
+| Metric | Δ |
+|---|---|
+| Net branch size vs main | +210 / −36 lines (5 files + 2 new) |
+| New helper script | **bin/gstack-pr-title-rewrite.sh** (40 lines, single source of truth) |
+| New unit tests added | **+9** (test/pr-title-rewrite.test.ts) |
+| Unit suite runtime | **402ms** (free-tier, runs on every push) |
+| Loopholes closed | **3** (ship Step 19, document-release Step 9, pr-title-sync.yml) |
+| Reviewers run on this PR | plan-eng-review (CLEARED) + adversarial (Claude subagent) |
+
+### What this means for builders
+
+PR titles are now a deterministic function of the VERSION file, no matter how the PR got created. Open one via the web UI with `feat: my thing` and the next push of a VERSION bump turns it into `v1.23.0.0 feat: my thing`. Run `/ship` from a stale branch where Step 12's queue-drift detection rebumps to a higher version and the title moves with it. Run `/document-release`, bump VERSION at Step 8, and the PR title now follows along instead of staying at the previous version.
+
+The helper itself rejects malformed VERSION values (anything outside `^[0-9]+(\.[0-9]+)*$`) with exit code 2, uses a literal `case` prefix match instead of bash's pattern-matching `#` operator (so a hypothetical VERSION containing glob metacharacters can't silently mismatch), and is idempotent — applying it twice yields the same result.
+
+### Itemized changes
+
+#### Added
+
+- `bin/gstack-pr-title-rewrite.sh`: shared helper. Takes `<NEW_VERSION>` + `<CURRENT_TITLE>`, prints the corrected title on stdout. Three cases: already correct (no-op), different version prefix (replace), no prefix (prepend). Validates NEW_VERSION shape at entry. Used by `/ship`, `/document-release`, and the GitHub Action.
+- `test/pr-title-rewrite.test.ts`: 9 deterministic tests covering already-correct, different-prefix, different-prefix-length, no-prefix, plain-words-not-stripped, single-segment-not-stripped, missing-args, malformed-VERSION rejection, and idempotence. Free-tier, runs on every `bun test`.
+
+#### Changed
+
+- `ship/SKILL.md.tmpl` Step 19: idempotency block now always rewrites titles to start with `v$NEW_VERSION` — no more "custom title kept intentionally" escape hatch. Shells out to `bin/gstack-pr-title-rewrite.sh` for the rule. Adds a post-edit self-check that re-fetches the title and retries once if the edit didn't stick.
+- `ship/SKILL.md.tmpl` create-PR snippets (lines 867 and 876): inline comment makes the `v$NEW_VERSION` requirement unmissable when reading the step.
+- `document-release/SKILL.md.tmpl` Step 9: new "PR/MR title sync" sub-step calls the same helper after the body update. Catches the case where Step 8 bumped VERSION after `/ship` had already created the PR — title follows VERSION instead of going stale.
+- `.github/workflows/pr-title-sync.yml`: drops the "eligible only if already prefixed" gate. Sources the helper, rewrites unconditionally on every VERSION change. Defense-in-depth backstop for PRs opened outside the skills (manual `gh pr create`, web UI). Uses `env:` for `OLD_TITLE` so YAML expression injection can't reach `run:`.
+
+#### For contributors
+
+- The helper is a regular `bin/` script with `set -euo pipefail`, no external deps beyond bash + sed. Slots into the existing pattern alongside `bin/gstack-config`, `bin/gstack-slug`, `bin/gstack-next-version`.
+- Test coverage gates this — any future change to the rule has to update the test fixtures or the suite goes red.
+
+## [1.21.1.0] - 2026-04-28
+
+## **plan-ceo-review smoke tightens. The "agent skips Step 0 and ships a plan" regression now fails the gate.**
+
+The v1.15.0.0 real-PTY harness shipped with a smoke that accepted either `'asked'` or `'plan_ready'` as success. That OR was too lax for `/plan-ceo-review` specifically: the skill template mandates Step 0A premise challenge plus Step 0F mode selection BEFORE any plan write, so reaching `plan_ready` first IS the regression. This release tightens the assertion to `'asked'` only for that smoke, and refactors the runner so the contract is testable in <1s instead of $0.50 of stochastic PTY.
+
+### The numbers that matter
+
+Numbers come from `git diff --shortstat origin/main..HEAD` and `bun test test/helpers/claude-pty-runner.unit.test.ts` on a clean tree.
+
+| Metric | Δ |
+|---|---|
+| Net branch size vs main | +162 / −65 lines (3 files) |
+| New unit tests added | **+24** (claude-pty-runner.unit.test.ts) |
+| Unit suite runtime | **14ms** (deterministic, free-tier) |
+| Real-PTY gate runs verified | **4 clean PTY runs** (3 lock-in + 1 post-refactor) |
+| Outcome assertions covered | **5/5** (was 3/5; `plan_ready` is now FAIL for plan-ceo) |
+| Reviewers run on this PR | plan-eng-review (CLEARED) + codex consult + 2 specialists + adversarial |
+
+### What this means for builders
+
+Three new classes of harness regression are now caught deterministically in the free tier instead of waiting on a $0.50 stochastic PTY run. The classifier is extracted into a pure `classifyVisible()` function so reordering branches in the polling loop fails the unit tests instead of silently shipping. Permission dialogs (which render numbered lists) are filtered out of the `'asked'` classification so a permission prompt cannot pose as a Step 0 skill question. The bare phrase `Do you want to proceed?` no longer triggers permission detection on its own — it now requires a file-edit context co-trigger, so a skill question that contains the phrase isn't mis-classified.
+
+For `/plan-ceo-review` specifically: any future preamble slim-down or template edit that lets the agent skip Step 0 and write a plan will fail the gate before the PR ships. Pull, run `bun test`, and the harness layer is provably tighter without you having to spend a token.
+
+### Itemized changes
+
+#### Added
+
+- `test/helpers/claude-pty-runner.unit.test.ts`: 24 deterministic tests covering `isPermissionDialogVisible` (with the new co-trigger contract), `isNumberedOptionListVisible`, `parseNumberedOptions`, and the new `classifyVisible()` runtime path. Free-tier, runs on every `bun test`.
+- `classifyVisible(visible)` in `claude-pty-runner.ts`: pure classifier extracted from the polling loop. Returns `{ outcome, summary } | null`. Branch order: silent_write → plan_ready → asked → null (with permission-dialog filter). Live-state branches (process exited, "Unknown command") stay in the runner.
+- `TAIL_SCAN_BYTES = 1500` exported constant. Shared between `runPlanSkillObservation` and the routing test's nav loop so tuning stays in sync.
+- `env?: Record<string, string>` option on `runPlanSkillObservation`, threaded to `launchClaudePty`. Plumbing for future env-driven test isolation (gstack-config does not yet honor env overrides; tracked as post-merge follow-up).
+
+#### Changed
+
+- `test/skill-e2e-plan-ceo-plan-mode.test.ts`: assertion narrowed from `['asked', 'plan_ready']` to `'asked'` only. Failure message now branches on `outcome` (plan_ready vs timeout vs silent_write) with a tailored diagnosis line, and references skill-template section names instead of line numbers (durable to template edits).
+- `isPermissionDialogVisible`: bare `Do you want to proceed?` now requires a file-edit context co-trigger (`Edit to <path>` or `Write to <path>`). Other clauses (`requested permissions to`, `allow all edits`, `always allow access to`, `Bash command requires permission`) remain unconditional.
+- `test/skill-e2e-plan-ceo-mode-routing.test.ts`: replaces the local `1500` magic number with the shared `TAIL_SCAN_BYTES` constant.
+
+#### For contributors
+
+- The runner change is additive and the existing sibling smokes (`plan-eng`, `plan-design`, `plan-devex`, `plan-mode-no-op`) keep their loose `['asked', 'plan_ready']` assertion. Their behavior is unchanged.
+- Post-merge follow-ups captured in `TODOS.md`: per-finding AskUserQuestion count assertion (V2), env-driven gstack-config overrides (so `QUESTION_TUNING=false` actually isolates the test), path-confusion hardening on `SANCTIONED_WRITE_SUBSTRINGS`.
+
 ## [1.20.0.0] - 2026-04-28
 
 ## **Browser-skills land. `/scrape <intent>` first call drives the page; second call runs the codified script in 200ms.**

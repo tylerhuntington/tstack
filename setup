@@ -540,7 +540,7 @@ create_agents_sidecar() {
   mkdir -p "$agents_gstack"
 
   # Sidecar directories that skills reference at runtime
-  for asset in bin browse review qa; do
+  for asset in bin browse design review qa; do
     local src="$SOURCE_GSTACK_DIR/$asset"
     local dst="$agents_gstack/$asset"
     if [ -d "$src" ] || [ -f "$src" ]; then
@@ -579,7 +579,7 @@ create_codex_runtime_root() {
     rm -rf "$codex_gstack"
   fi
 
-  mkdir -p "$codex_gstack" "$codex_gstack/browse" "$codex_gstack/gstack-upgrade" "$codex_gstack/review"
+  mkdir -p "$codex_gstack" "$codex_gstack/browse" "$codex_gstack/design" "$codex_gstack/gstack-upgrade" "$codex_gstack/review"
 
   if [ -f "$agents_dir/gstack/SKILL.md" ]; then
     ln -snf "$agents_dir/gstack/SKILL.md" "$codex_gstack/SKILL.md"
@@ -592,6 +592,28 @@ create_codex_runtime_root() {
   fi
   if [ -d "$gstack_dir/browse/bin" ]; then
     ln -snf "$gstack_dir/browse/bin" "$codex_gstack/browse/bin"
+  fi
+  if [ -f "$gstack_dir/design/src/cli.ts" ]; then
+    # Use a source-backed wrapper for Codex. Bun-compiled design binaries can
+    # choose IPv4 on dual-stack hosts, while the source runtime follows the
+    # user's shell/network setup and works with IPv6-authorized providers.
+    [ -L "$codex_gstack/design/dist" ] && rm -f "$codex_gstack/design/dist"
+    mkdir -p "$codex_gstack/design/dist"
+    cat > "$codex_gstack/design/dist/design" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v bun >/dev/null 2>&1; then
+  _bun=\$(command -v bun)
+elif [ -x "\$HOME/.bun/bin/bun" ]; then
+  _bun="\$HOME/.bun/bin/bun"
+else
+  _bun=bun
+fi
+exec "\$_bun" "$gstack_dir/design/src/cli.ts" "\$@"
+EOF
+    chmod +x "$codex_gstack/design/dist/design"
+  elif [ -d "$gstack_dir/design/dist" ]; then
+    ln -snf "$gstack_dir/design/dist" "$codex_gstack/design/dist"
   fi
   if [ -f "$agents_dir/gstack-upgrade/SKILL.md" ]; then
     ln -snf "$agents_dir/gstack-upgrade/SKILL.md" "$codex_gstack/gstack-upgrade/SKILL.md"
